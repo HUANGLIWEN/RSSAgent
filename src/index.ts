@@ -30,6 +30,48 @@ type ParserItemExt = {
   description?: string;
 };
 
+type FeedFailure = {
+  feedTitle: string;
+  feedUrl: string;
+  reason: string;
+  errorType: 'timeout' | 'other';
+};
+
+type FeedFetchOutcome = {
+  items: NewsItem[];
+  failure: FeedFailure | null;
+};
+
+type FeedObservability = {
+  sourceDir: string;
+  opmlFileCount: number;
+  totalFeedsInOpml: number;
+  selectedFeedCount: number;
+  failedFeedCount: number;
+  failedRate: number;
+  timeoutFeeds: string[];
+  failedFeeds: FeedFailure[];
+};
+
+type ToolOutput = {
+  profileKeywords: string[];
+  selectedFeeds: Array<{ title: string; xmlUrl: string; score: number }>;
+  items: NewsItem[];
+  feedObservability: FeedObservability;
+};
+
+type CliOptions = {
+  sourceDir: string;
+  workBackground: string;
+};
+
+const REQUIRED_HEADINGS = [
+  '## 本周发布了什么（最多 3-5 条简要概述）',
+  '## 哪些内容与我的工作相关（1-2 条，附带背景）',
+  '## 我应该在本周测试什么（具体操作）',
+  '## 我可以完全忽略的内容（其他所有内容）',
+] as const;
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PROJECT_ROOT = path.resolve(__dirname, '..');
@@ -58,6 +100,38 @@ const rssParser = new Parser<Record<string, unknown>, ParserItemExt>({
     item: ['content:encoded', 'description'],
   },
 });
+
+function parseCliArgs(argv: string[]): CliOptions {
+  let sourceDir = process.env.SOURCE_DIR || 'rss-source';
+  const positional: string[] = [];
+
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (arg === '--source-dir') {
+      const next = argv[i + 1];
+      if (!next || next.startsWith('--')) {
+        throw new Error('Missing value for --source-dir');
+      }
+      sourceDir = next;
+      i += 1;
+      continue;
+    }
+
+    if (arg.startsWith('--source-dir=')) {
+      sourceDir = arg.slice('--source-dir='.length);
+      continue;
+    }
+
+    positional.push(arg);
+  }
+
+  const workBackground =
+    positional.join(' ').trim() ||
+    process.env.WORK_BACKGROUND ||
+    '[AI工程师，Cursor/GitHub Copilot，开发与上线AI功能，软件/互联网]';
+
+  return { sourceDir, workBackground };
+}
 
 function splitKeywords(workProfile: string): string[] {
   return [
@@ -94,6 +168,56 @@ function formatTimestamp(date: Date): string {
   const mi = pad2(date.getMinutes());
   const ss = pad2(date.getSeconds());
   return `${yyyy}${mm}${dd}-${hh}${mi}${ss}`;
+}
+
+function classifyFeedError(error: unknown): { errorType: 'timeout' | 'other'; reason: string } {
+  const message = String((error as Error)?.message || error || 'unknown error');
+  const lowered = message.toLowerCase();
+  if (lowered.includes('timeout') || lowered.includes('timed out') || lowered.includes('etimedout')) {
+    return { errorType: 'timeout', reason: message };
+  }
+  return { errorType: 'other', reason: message };
+}
+
+function hasRequiredHeadings(text: string): boolean {
+  return REQUIRED_HEADINGS.every((heading) => text.includes(heading));
+}
+
+function extractSectionBody(markdown: string, heading: string): string {
+  const lines = markdown.split(/\r?\n/);
+  const start = lines.findIndex((line) => line.trim() === heading);
+  if (start < 0) return '';
+
+  const body: string[] = [];
+  for (let i = start + 1; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (line.startsWith('## ')) break;
+    body.push(line);
+  }
+  return body.join('\n').trim();
+}
+
+function extractListItems(sectionBody: string): string[] {
+  const lines = sectionBody.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  return lines
+    .filter((line) => /^[-*]\s+/.test(line) || /^\d+\.\s+/.test(line))
+    .map((line) => line.replace(/^[-*]\s+/, '').replace(/^\d+\.\s+/, '').trim())
+    .filter((line) => line.length > 0);
+}
+
+function extractTrends(trendMarkdown: string): string[] {
+  return trendMarkdown
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => line.replace(/^[-*]\s+/, '').replace(/^\d+\.\s+/, '').trim())
+    .filter((line) => line.length > 0);
+}
+
+function findToolOutput(result: { toolResults: Array<{ toolName: string; output: unknown }> }): ToolOutput | null {
+  const matched = result.toolResults.find((t) => t.toolName === 'getLatestNewsFromRssSourceDir');
+  if (!matched || !matched.output || typeof matched.output !== 'object') return null;
+  return matched.output as ToolOutput;
 }
 
 async function getLatestReportFile(): Promise<string | null> {
@@ -197,7 +321,9 @@ async function loadFeedsFromSingleOpml(fullPath: string): Promise<FeedInfo[]> {
   return feeds;
 }
 
-async function loadFeedsFromSourceDir(sourceDir: string): Promise<FeedInfo[]> {
+async function loadFeedsFromSourceDir(
+  sourceDir: string,
+): Promise<{ opmlFiles: string[]; feeds: FeedInfo[]; totalFeedsInOpml: number }> {
   const fullDir = path.isAbsolute(sourceDir) ? sourceDir : path.join(PROJECT_ROOT, sourceDir);
   await mkdir(fullDir, { recursive: true });
 
@@ -217,14 +343,19 @@ async function loadFeedsFromSourceDir(sourceDir: string): Promise<FeedInfo[]> {
   for (const feed of merged) {
     if (!dedup.has(feed.xmlUrl)) dedup.set(feed.xmlUrl, feed);
   }
-  return [...dedup.values()];
+
+  return {
+    opmlFiles,
+    feeds: [...dedup.values()],
+    totalFeedsInOpml: merged.length,
+  };
 }
 
 async function fetchFeedLatestItems(
   feed: FeedInfo,
   maxItemsPerFeed: number,
   sinceDate: Date,
-): Promise<NewsItem[]> {
+): Promise<FeedFetchOutcome> {
   try {
     const feedContent = await rssParser.parseURL(feed.xmlUrl);
     const items: NewsItem[] = (feedContent.items || []).slice(0, maxItemsPerFeed).map((item) => {
@@ -243,20 +374,87 @@ async function fetchFeedLatestItems(
       };
     });
 
-    return items.filter((item) => !item.publishedTimestamp || item.publishedTimestamp >= sinceDate.getTime());
+    return {
+      items: items.filter((item) => !item.publishedTimestamp || item.publishedTimestamp >= sinceDate.getTime()),
+      failure: null,
+    };
   } catch (error) {
-    return [
-      {
+    const classified = classifyFeedError(error);
+    return {
+      items: [
+        {
+          feedTitle: feed.title,
+          feedUrl: feed.xmlUrl,
+          title: '[feed unavailable]',
+          link: '',
+          publishedAt: '',
+          publishedTimestamp: null,
+          summary: `Failed to parse feed: ${classified.reason}`,
+        },
+      ],
+      failure: {
         feedTitle: feed.title,
         feedUrl: feed.xmlUrl,
-        title: '[feed unavailable]',
-        link: '',
-        publishedAt: '',
-        publishedTimestamp: null,
-        summary: `Failed to parse feed: ${String((error as Error)?.message || error)}`,
+        reason: classified.reason,
+        errorType: classified.errorType,
       },
-    ];
+    };
   }
+}
+
+async function collectNewsFromSourceDir(params: {
+  sourceDir: string;
+  workProfile: string;
+  maxFeeds: number;
+  maxItemsPerFeed: number;
+  recentDays: number;
+}): Promise<ToolOutput> {
+  const { sourceDir, workProfile, maxFeeds, maxItemsPerFeed, recentDays } = params;
+  const { opmlFiles, feeds, totalFeedsInOpml } = await loadFeedsFromSourceDir(sourceDir);
+  const sinceDate = new Date(Date.now() - recentDays * 24 * 60 * 60 * 1000);
+
+  const keywords = splitKeywords(workProfile);
+  const rankedFeeds = feeds
+    .map((feed) => ({
+      ...feed,
+      score: scoreByKeywords(`${feed.title} ${feed.xmlUrl}`, keywords),
+    }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, maxFeeds);
+
+  const outcomes = await Promise.all(
+    rankedFeeds.map((feed) => fetchFeedLatestItems(feed, maxItemsPerFeed, sinceDate)),
+  );
+
+  const items = outcomes
+    .flatMap((o) => o.items)
+    .sort((a, b) => (b.publishedTimestamp || 0) - (a.publishedTimestamp || 0));
+
+  const failedFeeds = outcomes
+    .map((o) => o.failure)
+    .filter((failure): failure is FeedFailure => Boolean(failure));
+
+  const timeoutFeeds = failedFeeds
+    .filter((f) => f.errorType === 'timeout')
+    .map((f) => `${f.feedTitle} (${f.feedUrl})`);
+
+  const observability: FeedObservability = {
+    sourceDir,
+    opmlFileCount: opmlFiles.length,
+    totalFeedsInOpml,
+    selectedFeedCount: rankedFeeds.length,
+    failedFeedCount: failedFeeds.length,
+    failedRate: rankedFeeds.length === 0 ? 0 : Number((failedFeeds.length / rankedFeeds.length).toFixed(4)),
+    timeoutFeeds,
+    failedFeeds,
+  };
+
+  return {
+    profileKeywords: keywords,
+    selectedFeeds: rankedFeeds.map(({ title, xmlUrl, score }) => ({ title, xmlUrl, score })),
+    items,
+    feedObservability: observability,
+  };
 }
 
 const getLatestNewsFromRssSourceDir = tool({
@@ -269,37 +467,11 @@ const getLatestNewsFromRssSourceDir = tool({
     maxItemsPerFeed: z.number().int().min(1).max(10).default(3),
     recentDays: z.number().int().min(1).max(30).default(7),
   }),
-  execute: async ({ sourceDir, workProfile, maxFeeds, maxItemsPerFeed, recentDays }) => {
-    const feeds = await loadFeedsFromSourceDir(sourceDir);
-    const sinceDate = new Date(Date.now() - recentDays * 24 * 60 * 60 * 1000);
-
-    const keywords = splitKeywords(workProfile);
-    const rankedFeeds = feeds
-      .map((feed) => ({
-        ...feed,
-        score: scoreByKeywords(`${feed.title} ${feed.xmlUrl}`, keywords),
-      }))
-      .sort((a, b) => b.score - a.score)
-      .slice(0, maxFeeds);
-
-    const settled = await Promise.all(
-      rankedFeeds.map((feed) => fetchFeedLatestItems(feed, maxItemsPerFeed, sinceDate)),
-    );
-
-    const items = settled.flat().sort((a, b) => (b.publishedTimestamp || 0) - (a.publishedTimestamp || 0));
-
-    return {
-      profileKeywords: keywords,
-      selectedFeeds: rankedFeeds.map(({ title, xmlUrl, score }) => ({ title, xmlUrl, score })),
-      items,
-    };
-  },
+  execute: async ({ sourceDir, workProfile, maxFeeds, maxItemsPerFeed, recentDays }) =>
+    collectNewsFromSourceDir({ sourceDir, workProfile, maxFeeds, maxItemsPerFeed, recentDays }),
 });
 
-const workBackground =
-  process.argv.slice(2).join(' ').trim() ||
-  process.env.WORK_BACKGROUND ||
-  '[AI工程师，Cursor/GitHub Copilot，开发与上线AI功能，软件/互联网]';
+const cli = parseCliArgs(process.argv.slice(2));
 
 const rssAgent = new Agent({
   model: openai(MODEL_ID),
@@ -320,53 +492,145 @@ const rssAgent = new Agent({
   ].join(' '),
 });
 
-const prompt = [
-  `这是我的工作背景：${workBackground}。从以下 AI 新闻项目中，识别出对我的具体工作流有直接影响的发布内容。对于每个相关项目，简要说明它为什么对我的工作重要，以及我应当测试什么。忽略其他一切。`,
-  '输出要求：将筛选后的输出内容结构化并总结为以下4段，且必须使用完全一致的标题：',
-  '1. 本周发布了什么（最多 3-5 条简要概述）',
-  '2. 哪些内容与我的工作相关（1-2 条，附带背景）',
-  '3. 我应该在本周测试什么（具体操作）',
-  '4. 我可以完全忽略的内容（其他所有内容）',
-  '标题必须逐字一致，不允许省略括号内容，不允许改写标题。',
-  '如果某部分没有内容，写“无”。',
-  '除这四段外不要输出其它段落。',
-  '必须严格按以下 Markdown 模板输出：',
-  '## 本周发布了什么（最多 3-5 条简要概述）',
-  '- ...',
-  '## 哪些内容与我的工作相关（1-2 条，附带背景）',
-  '- ...',
-  '## 我应该在本周测试什么（具体操作）',
-  '1. ...',
-  '## 我可以完全忽略的内容（其他所有内容）',
-  '- ...',
-].join('\n');
+function buildPrompt(workBackground: string, sourceDir: string, retry: boolean): string {
+  const retryLine = retry
+    ? '上一次输出缺少固定标题。请严格保证四个标题全部出现且逐字一致。'
+    : '';
 
-const result = await rssAgent.generate({
-  prompt,
-});
+  return [
+    `这是我的工作背景：${workBackground}。从以下 AI 新闻项目中，识别出对我的具体工作流有直接影响的发布内容。对于每个相关项目，简要说明它为什么对我的工作重要，以及我应当测试什么。忽略其他一切。`,
+    `RSS 源目录：${sourceDir}。调用工具时必须使用这个 sourceDir。`,
+    retryLine,
+    '输出要求：将筛选后的输出内容结构化并总结为以下4段，且必须使用完全一致的标题：',
+    '1. 本周发布了什么（最多 3-5 条简要概述）',
+    '2. 哪些内容与我的工作相关（1-2 条，附带背景）',
+    '3. 我应该在本周测试什么（具体操作）',
+    '4. 我可以完全忽略的内容（其他所有内容）',
+    '标题必须逐字一致，不允许省略括号内容，不允许改写标题。',
+    '如果某部分没有内容，写“无”。',
+    '除这四段外不要输出其它段落。',
+    '必须严格按以下 Markdown 模板输出：',
+    '## 本周发布了什么（最多 3-5 条简要概述）',
+    '- ...',
+    '## 哪些内容与我的工作相关（1-2 条，附带背景）',
+    '- ...',
+    '## 我应该在本周测试什么（具体操作）',
+    '1. ...',
+    '## 我可以完全忽略的内容（其他所有内容）',
+    '- ...',
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
 
+async function generateValidatedReport(): Promise<{ text: string; toolOutput: ToolOutput | null; retries: number }> {
+  let lastText = '';
+  let lastToolOutput: ToolOutput | null = null;
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const prompt = buildPrompt(cli.workBackground, cli.sourceDir, attempt > 0);
+    const result = await rssAgent.generate({ prompt });
+    const text = result.text.trim();
+    const toolOutput = findToolOutput(result);
+
+    lastText = text;
+    lastToolOutput = toolOutput;
+
+    if (hasRequiredHeadings(text)) {
+      return { text, toolOutput, retries: attempt };
+    }
+  }
+
+  return { text: lastText, toolOutput: lastToolOutput, retries: 1 };
+}
+
+const generated = await generateValidatedReport();
 const previousReportPath = await getLatestReportFile();
 const previousReport = previousReportPath ? await readFile(previousReportPath, 'utf8') : null;
-const trendSummary = await summarizeTrend(previousReport, result.text, workBackground);
+const trendSummary = await summarizeTrend(previousReport, generated.text, cli.workBackground);
 
 const now = new Date();
 const timestamp = formatTimestamp(now);
 const reportPath = path.join(NEWS_DIR, `${timestamp}.md`);
+const jsonPath = path.join(NEWS_DIR, `${timestamp}.json`);
+
+const fallbackToolOutput =
+  generated.toolOutput ??
+  (await collectNewsFromSourceDir({
+    sourceDir: cli.sourceDir,
+    workProfile: cli.workBackground,
+    maxFeeds: 30,
+    maxItemsPerFeed: 3,
+    recentDays: 7,
+  }));
+
+const observability = fallbackToolOutput.feedObservability;
+const failedRatePct = observability ? `${(observability.failedRate * 100).toFixed(2)}%` : 'N/A';
+const timeoutLines =
+  observability && observability.timeoutFeeds.length > 0
+    ? observability.timeoutFeeds.map((x) => `- ${x}`)
+    : ['- 无'];
+const failedSampleLines =
+  observability && observability.failedFeeds.length > 0
+    ? observability.failedFeeds.slice(0, 10).map((f) => `- ${f.feedTitle}: ${f.reason}`)
+    : ['- 无'];
+
 const reportContent = [
   `# RSS News Report - ${timestamp}`,
   '',
   `- GeneratedAt: ${now.toISOString()}`,
-  `- WorkBackground: ${workBackground}`,
+  `- WorkBackground: ${cli.workBackground}`,
+  `- SourceDir: ${cli.sourceDir}`,
+  `- FormatValidationRetried: ${generated.retries > 0 ? 'yes' : 'no'}`,
   previousReportPath ? `- ComparedWith: ${path.basename(previousReportPath)}` : '- ComparedWith: none',
   '',
-  result.text.trim(),
+  generated.text,
   '',
   '## 与上次相比最值得关注的新趋势',
   trendSummary,
   '',
+  '## Feed 拉取观测',
+  `- OPML 文件数: ${observability?.opmlFileCount ?? 'N/A'}`,
+  `- OPML 内源总数（去重前）: ${observability?.totalFeedsInOpml ?? 'N/A'}`,
+  `- 本次选取源数: ${observability?.selectedFeedCount ?? 'N/A'}`,
+  `- 失败源数: ${observability?.failedFeedCount ?? 'N/A'}`,
+  `- 失败率: ${failedRatePct}`,
+  '- 超时源列表:',
+  ...timeoutLines,
+  '- 失败样本:',
+  ...failedSampleLines,
+  '',
 ].join('\n');
 
+await mkdir(NEWS_DIR, { recursive: true });
 await writeFile(reportPath, reportContent, 'utf8');
 
+const section1 = extractSectionBody(generated.text, REQUIRED_HEADINGS[0]);
+const section2 = extractSectionBody(generated.text, REQUIRED_HEADINGS[1]);
+const section3 = extractSectionBody(generated.text, REQUIRED_HEADINGS[2]);
+const section4 = extractSectionBody(generated.text, REQUIRED_HEADINGS[3]);
+
+const structured = {
+  timestamp,
+  generatedAt: now.toISOString(),
+  workBackground: cli.workBackground,
+  sourceDir: cli.sourceDir,
+  comparedWith: previousReportPath ? path.basename(previousReportPath) : null,
+  reportMarkdownPath: reportPath,
+  reportJsonPath: jsonPath,
+  formatValidationRetried: generated.retries > 0,
+  sections: {
+    releases: extractListItems(section1),
+    relevant: extractListItems(section2),
+    tests: extractListItems(section3),
+    ignored: extractListItems(section4),
+  },
+  trends: extractTrends(trendSummary),
+  feedObservability: observability ?? null,
+};
+
+await writeFile(jsonPath, JSON.stringify(structured, null, 2), 'utf8');
+
 console.log(reportContent);
-console.log(`Saved: ${reportPath}`);
+console.log(`Saved Markdown: ${reportPath}`);
+console.log(`Saved JSON: ${jsonPath}`);

@@ -1,0 +1,71 @@
+name: Scheduled RSS News Report
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '30 1 * * *'
+    - cron: '0 2 * * 1'
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  generate-report:
+    runs-on: ubuntu-latest
+    env:
+      OPENAI_KEY: ${{ secrets.OPENAI_KEY }}
+      OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
+      OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+      WORK_BACKGROUND: ${{ vars.WORK_BACKGROUND }}
+      SOURCE_DIR: ${{ vars.SOURCE_DIR }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate report
+        run: |
+          DIR="${SOURCE_DIR:-rss-source}"
+          npm start -- --source-dir "$DIR"
+
+      - name: Upload reports artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: news-reports-${{ github.run_id }}
+          path: news/*
+          if-no-files-found: error
+
+      - name: Publish report as issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+
+            const newsDir = path.join(process.env.GITHUB_WORKSPACE, 'news');
+            const files = fs.readdirSync(newsDir).filter((f) => f.endsWith('.md')).sort();
+            if (files.length === 0) {
+              core.setFailed('No markdown report found in news/');
+              return;
+            }
+
+            const latest = files[files.length - 1];
+            const body = fs.readFileSync(path.join(newsDir, latest), 'utf8');
+            const title = `[RSSAgent] ${latest.replace('.md', '')}`;
+
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+              labels: ['report', 'automation'],
+            });

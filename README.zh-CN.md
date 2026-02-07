@@ -18,8 +18,11 @@
 - 抓取最新 RSS 条目，带超时与失败隔离
 - 使用 AI Agent + Tool Call 做工作相关性筛选
 - 输出固定 4 段结构，便于每周行动
+- 保存前自动校验 4 个固定标题，缺失时自动重试 1 次
 - 每次运行自动保存到 `news/<时间戳>.md`
+- 同步生成结构化数据：`news/<时间戳>.json`
 - 自动与上次结果对比，并附加“最值得关注的新趋势”
+- 自动输出 Feed 拉取观测（失败率、超时源、失败样本）
 
 ## 环境要求
 
@@ -55,12 +58,19 @@ cp .env.example .env
 npm start -- "AI工程师, Cursor, 开发AI功能, 互联网"
 ```
 
-只要把 `.opml` 文件放进 `rss-source/` 目录，程序下次运行就会自动解析。
+指定 RSS 源目录：
+
+```bash
+npm start -- --source-dir rss-source-teamA "AI工程师, Cursor, 开发AI功能, 互联网"
+```
+
+只要把 `.opml` 文件放进 `rss-source/`（或你指定的目录），程序下次运行就会自动解析。
 
 或在环境变量中设置默认背景：
 
 ```bash
 WORK_BACKGROUND="[你的角色, 你的工具, 你的日常任务, 你的行业]"
+SOURCE_DIR="rss-source"
 npm start
 ```
 
@@ -74,9 +84,11 @@ npm start
 ## 运行结果存档与自动对比
 
 - 每次运行都会生成一份报告：`news/<YYYYMMDD-HHmmss>.md`
+- 每次运行也会生成结构化 JSON：`news/<YYYYMMDD-HHmmss>.json`
 - 报告中会记录本次时间、工作背景、以及对比的上一份报告文件名
 - 首次运行：显示“暂无上次结果可对比”
 - 第二次及以后：自动对比上次报告，并输出“与上次相比最值得关注的新趋势”
+- 报告会追加 `Feed 拉取观测` 段，包含失败率与超时源列表
 
 ## 输出结构
 
@@ -98,9 +110,24 @@ npm start
 ```text
 src/index.ts                 # 主程序（Agent + 工具实现）
 rss-source/*.opml            # RSS 源文件（自动加载）
-news/                        # 每次运行生成的 Markdown 报告
+news/                        # 每次运行生成的 Markdown + JSON 报告
 requirement.md               # 需求说明
 ```
+
+## GitHub Actions 定时运行
+
+已提供工作流：`.github/workflows/scheduled-news-report.yml`，支持每日+每周定时与手动触发。
+
+需要在仓库中配置：
+
+- Secrets: `OPENAI_KEY`, `OPENAI_MODEL`, `OPENAI_BASE_URL`
+- Variables（可选）: `WORK_BACKGROUND`, `SOURCE_DIR`
+
+工作流会：
+
+- 自动运行 `npm start`
+- 产出 `news/` 报告并上传为 artifact
+- 自动创建一条 Issue 发布最新报告
 
 ## 安全建议
 

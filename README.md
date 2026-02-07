@@ -18,8 +18,11 @@ The OPML feed list is based on recommendations from:
 - Fetch latest RSS entries with timeout and failure isolation
 - Use AI Agent + tool calls to filter by workflow relevance
 - Output in fixed 4-section structure for weekly action
+- Validate the 4 required section headings before save; auto-retry once if invalid
 - Save every run to `news/<timestamp>.md`
+- Save structured data to `news/<timestamp>.json`
 - Auto-compare with the previous report and append "most important new trends"
+- Add feed fetch observability (failure rate, timeout feeds, failure samples)
 
 ## Requirements
 
@@ -55,12 +58,19 @@ Run with explicit work background:
 npm start -- "AI工程师, Cursor, 开发AI功能, 互联网"
 ```
 
-Any `.opml` file placed under `rss-source/` will be automatically parsed on the next run.
+Use custom RSS source directory:
+
+```bash
+npm start -- --source-dir rss-source-teamA "AI engineer, Cursor, build AI features, SaaS"
+```
+
+Any `.opml` file placed under `rss-source/` (or your custom source directory) will be parsed on the next run.
 
 Or set default in env:
 
 ```bash
 WORK_BACKGROUND="[你的角色, 你的工具, 你的日常任务, 你的行业]"
+SOURCE_DIR="rss-source"
 npm start
 ```
 
@@ -74,9 +84,11 @@ npm start
 ## Report Persistence and Auto-Comparison
 
 - Each run creates a report file: `news/<YYYYMMDD-HHmmss>.md`
+- Each run also creates structured JSON: `news/<YYYYMMDD-HHmmss>.json`
 - The report includes generated time, work background, and compared previous report file name
 - First run: shows that no previous report is available
 - Subsequent runs: auto-compare with the latest previous report and append "most important new trends"
+- Report appends a `Feed 拉取观测` section for source health tracking
 
 ## Output Format
 
@@ -98,9 +110,26 @@ The agent outputs exactly these 4 sections:
 ```text
 src/index.ts                 # Main agent implementation
 rss-source/*.opml            # RSS source files (auto-loaded)
-news/                        # Generated markdown reports per run
+news/                        # Generated markdown + json reports per run
 requirement.md               # Original requirement notes
 ```
+
+## Scheduled GitHub Action
+
+Workflow file: `.github/workflows/scheduled-news-report.yml`
+
+Required repository secrets:
+
+- `OPENAI_KEY`
+- `OPENAI_MODEL`
+- `OPENAI_BASE_URL`
+
+Optional repository variables:
+
+- `WORK_BACKGROUND`
+- `SOURCE_DIR`
+
+The workflow runs daily/weekly (and manual dispatch), uploads `news/` as artifact, and publishes the latest report as a GitHub Issue.
 
 ## Security Notes
 
