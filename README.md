@@ -50,6 +50,10 @@ Required variables:
 - `OPENAI_MODEL`
 - `OPENAI_BASE_URL`
 
+Also supported:
+
+- `OPENAI_API_KEY` (same as `OPENAI_KEY`)
+
 ## Usage
 
 Run with explicit work background:
@@ -123,6 +127,14 @@ Required repository secrets:
 - `OPENAI_KEY`
 - `OPENAI_MODEL`
 - `OPENAI_BASE_URL`
+
+Notes:
+
+- GitHub Actions will not load your local `.env` (it's in `.gitignore`). You must configure repository Secrets.
+- In GitHub repo: `Settings -> Secrets and variables -> Actions -> Secrets`, add:
+  - `OPENAI_KEY` (or `OPENAI_API_KEY`)
+  - `OPENAI_MODEL`
+  - `OPENAI_BASE_URL` (optional; defaults to `https://api.openai.com/v1`; set explicitly for third-party compatible endpoints)
 
 Optional repository variables:
 

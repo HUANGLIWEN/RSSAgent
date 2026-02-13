@@ -77,14 +77,23 @@ const __dirname = path.dirname(__filename);
 const PROJECT_ROOT = path.resolve(__dirname, '..');
 const NEWS_DIR = path.join(PROJECT_ROOT, 'news');
 
-const OPENAI_KEY = process.env.OPENAI_KEY;
-const OPENAI_MODEL = process.env.OPENAI_MODEL;
-const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL;
-
-if (!OPENAI_KEY || !OPENAI_MODEL || !OPENAI_BASE_URL) {
-  console.error('Missing required env vars: OPENAI_KEY, OPENAI_MODEL, OPENAI_BASE_URL');
+function assertNonEmptyEnv(name: string, value: string | undefined): asserts value is string {
+  if (typeof value === 'string' && value.trim() !== '') return;
+  console.error(`Missing required env var: ${name}`);
   process.exit(1);
 }
+
+// Support both repo-specific name (OPENAI_KEY) and the more common (OPENAI_API_KEY).
+const maybeKey = process.env.OPENAI_KEY || process.env.OPENAI_API_KEY;
+assertNonEmptyEnv('OPENAI_KEY (or OPENAI_API_KEY)', maybeKey);
+const OPENAI_KEY = maybeKey;
+
+const maybeModel = process.env.OPENAI_MODEL;
+assertNonEmptyEnv('OPENAI_MODEL', maybeModel);
+const OPENAI_MODEL = maybeModel;
+
+// Default to OpenAI's public endpoint if not provided.
+const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1';
 
 const MODEL_ID = OPENAI_MODEL;
 

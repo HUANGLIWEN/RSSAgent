@@ -50,6 +50,10 @@ cp .env.example .env
 - `OPENAI_MODEL`
 - `OPENAI_BASE_URL`
 
+也支持更通用的变量名：
+
+- `OPENAI_API_KEY`（等价于 `OPENAI_KEY`）
+
 ## 使用方式
 
 显式传入工作背景：
@@ -117,6 +121,14 @@ requirement.md               # 需求说明
 ## GitHub Actions 定时运行
 
 已提供工作流：`.github/workflows/scheduled-news-report.yml`，支持每日+每周定时与手动触发。
+
+注意：
+
+- GitHub Actions 不会读取你本地的 `.env`（该文件在 `.gitignore` 中），必须在仓库 Settings 里配置 Secrets。
+- 到 GitHub 仓库：`Settings -> Secrets and variables -> Actions -> Secrets` 新建：
+  - `OPENAI_KEY`（或 `OPENAI_API_KEY`）
+  - `OPENAI_MODEL`
+  - `OPENAI_BASE_URL`（可选；不填则默认 `https://api.openai.com/v1`；使用第三方兼容接口时建议显式填写）
 
 需要在仓库中配置：
 

@@ -12,9 +12,12 @@ permissions:
 
 jobs:
   generate-report:
+    environment: prod
     runs-on: ubuntu-latest
     env:
-      OPENAI_KEY: ${{ secrets.OPENAI_KEY }}
+      # Support both OPENAI_KEY and the more common OPENAI_API_KEY.
+      OPENAI_KEY: ${{ secrets.OPENAI_KEY || secrets.OPENAI_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY || secrets.OPENAI_KEY }}
       OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
       OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
       WORK_BACKGROUND: ${{ vars.WORK_BACKGROUND }}
@@ -31,6 +34,20 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Validate required env
+        run: |
+          set -euo pipefail
+          missing=0
+          for v in OPENAI_KEY OPENAI_MODEL; do
+            if [ -z "${!v:-}" ]; then
+              echo "::error::$v is empty. Add it in Settings -> Secrets and variables -> Actions -> Secrets."
+              missing=1
+            fi
+          done
+          # OPENAI_BASE_URL is optional in code (defaults to https://api.openai.com/v1), but if you target
+          # a non-OpenAI compatible vendor, you should set it explicitly.
+          if [ "$missing" -ne 0 ]; then exit 1; fi
 
       - name: Generate report
         run: |
