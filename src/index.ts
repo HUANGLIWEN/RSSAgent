@@ -1,13 +1,13 @@
 import 'dotenv/config';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import {fileURLToPath} from 'node:url';
+import {mkdir, readFile, readdir, writeFile} from 'node:fs/promises';
 
-import { Experimental_Agent as Agent, stepCountIs, tool } from 'ai';
-import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
-import { XMLParser } from 'fast-xml-parser';
+import {Experimental_Agent as Agent, stepCountIs, tool} from 'ai';
+import {createOpenAICompatible} from '@ai-sdk/openai-compatible';
+import {XMLParser} from 'fast-xml-parser';
 import Parser from 'rss-parser';
-import { z } from 'zod';
+import {z} from 'zod';
 
 type FeedInfo = {
   title: string;
@@ -66,8 +66,8 @@ type CliOptions = {
 };
 
 const REQUIRED_HEADINGS = [
-  '## 本周发布了什么（最多 3-5 条简要概述）',
-  '## 哪些内容与我的工作相关（1-2 条，附带背景）',
+  '## 本周发布了什么（最多 20 条简要概述）',
+  '## 哪些内容与我的工作相关（20 条，附带背景）',
   '## 我应该在本周测试什么（具体操作）',
   '## 我可以完全忽略的内容（其他所有内容）',
 ] as const;
@@ -139,7 +139,7 @@ function parseCliArgs(argv: string[]): CliOptions {
     process.env.WORK_BACKGROUND ||
     '[AI工程师，Cursor/GitHub Copilot，开发与上线AI功能，软件/互联网]';
 
-  return { sourceDir, workBackground };
+  return {sourceDir, workBackground};
 }
 
 function splitKeywords(workProfile: string): string[] {
@@ -183,9 +183,9 @@ function classifyFeedError(error: unknown): { errorType: 'timeout' | 'other'; re
   const message = String((error as Error)?.message || error || 'unknown error');
   const lowered = message.toLowerCase();
   if (lowered.includes('timeout') || lowered.includes('timed out') || lowered.includes('etimedout')) {
-    return { errorType: 'timeout', reason: message };
+    return {errorType: 'timeout', reason: message};
   }
-  return { errorType: 'other', reason: message };
+  return {errorType: 'other', reason: message};
 }
 
 function hasRequiredHeadings(text: string): boolean {
@@ -230,7 +230,7 @@ function findToolOutput(result: { toolResults: Array<{ toolName: string; output:
 }
 
 async function getLatestReportFile(): Promise<string | null> {
-  await mkdir(NEWS_DIR, { recursive: true });
+  await mkdir(NEWS_DIR, {recursive: true});
   const files = await readdir(NEWS_DIR);
   const markdownFiles = files.filter((f) => f.endsWith('.md')).sort();
   if (markdownFiles.length === 0) return null;
@@ -267,7 +267,7 @@ async function summarizeTrend(
     currentReport.slice(0, 7000),
   ].join('\n');
 
-  const trend = await trendAgent.generate({ prompt: trendPrompt });
+  const trend = await trendAgent.generate({prompt: trendPrompt});
   const content = trend.text.trim();
   if (!content) {
     return '- 本次与上次相比未识别到明确的新趋势。';
@@ -300,12 +300,12 @@ async function loadFeedsFromSingleOpml(fullPath: string): Promise<FeedInfo[]> {
   while (stack.length > 0) {
     const current = stack.pop() as
       | {
-          title?: string;
-          text?: string;
-          xmlUrl?: string;
-          htmlUrl?: string;
-          outline?: unknown;
-        }
+      title?: string;
+      text?: string;
+      xmlUrl?: string;
+      htmlUrl?: string;
+      outline?: unknown;
+    }
       | undefined;
 
     if (!current) continue;
@@ -334,9 +334,9 @@ async function loadFeedsFromSourceDir(
   sourceDir: string,
 ): Promise<{ opmlFiles: string[]; feeds: FeedInfo[]; totalFeedsInOpml: number }> {
   const fullDir = path.isAbsolute(sourceDir) ? sourceDir : path.join(PROJECT_ROOT, sourceDir);
-  await mkdir(fullDir, { recursive: true });
+  await mkdir(fullDir, {recursive: true});
 
-  const entries = await readdir(fullDir, { withFileTypes: true });
+  const entries = await readdir(fullDir, {withFileTypes: true});
   const opmlFiles = entries
     .filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith('.opml'))
     .map((entry) => path.join(fullDir, entry.name))
@@ -418,8 +418,8 @@ async function collectNewsFromSourceDir(params: {
   maxItemsPerFeed: number;
   recentDays: number;
 }): Promise<ToolOutput> {
-  const { sourceDir, workProfile, maxFeeds, maxItemsPerFeed, recentDays } = params;
-  const { opmlFiles, feeds, totalFeedsInOpml } = await loadFeedsFromSourceDir(sourceDir);
+  const {sourceDir, workProfile, maxFeeds, maxItemsPerFeed, recentDays} = params;
+  const {opmlFiles, feeds, totalFeedsInOpml} = await loadFeedsFromSourceDir(sourceDir);
   const sinceDate = new Date(Date.now() - recentDays * 24 * 60 * 60 * 1000);
 
   const keywords = splitKeywords(workProfile);
@@ -460,7 +460,7 @@ async function collectNewsFromSourceDir(params: {
 
   return {
     profileKeywords: keywords,
-    selectedFeeds: rankedFeeds.map(({ title, xmlUrl, score }) => ({ title, xmlUrl, score })),
+    selectedFeeds: rankedFeeds.map(({title, xmlUrl, score}) => ({title, xmlUrl, score})),
     items,
     feedObservability: observability,
   };
@@ -476,8 +476,8 @@ const getLatestNewsFromRssSourceDir = tool({
     maxItemsPerFeed: z.number().int().min(1).max(10).default(3),
     recentDays: z.number().int().min(1).max(30).default(7),
   }),
-  execute: async ({ sourceDir, workProfile, maxFeeds, maxItemsPerFeed, recentDays }) =>
-    collectNewsFromSourceDir({ sourceDir, workProfile, maxFeeds, maxItemsPerFeed, recentDays }),
+  execute: async ({sourceDir, workProfile, maxFeeds, maxItemsPerFeed, recentDays}) =>
+    collectNewsFromSourceDir({sourceDir, workProfile, maxFeeds, maxItemsPerFeed, recentDays}),
 });
 
 const cli = parseCliArgs(process.argv.slice(2));
@@ -538,7 +538,7 @@ async function generateValidatedReport(): Promise<{ text: string; toolOutput: To
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const prompt = buildPrompt(cli.workBackground, cli.sourceDir, attempt > 0);
-    const result = await rssAgent.generate({ prompt });
+    const result = await rssAgent.generate({prompt});
     const text = result.text.trim();
     const toolOutput = findToolOutput(result);
 
@@ -546,11 +546,11 @@ async function generateValidatedReport(): Promise<{ text: string; toolOutput: To
     lastToolOutput = toolOutput;
 
     if (hasRequiredHeadings(text)) {
-      return { text, toolOutput, retries: attempt };
+      return {text, toolOutput, retries: attempt};
     }
   }
 
-  return { text: lastText, toolOutput: lastToolOutput, retries: 1 };
+  return {text: lastText, toolOutput: lastToolOutput, retries: 1};
 }
 
 const generated = await generateValidatedReport();
@@ -611,7 +611,7 @@ const reportContent = [
   '',
 ].join('\n');
 
-await mkdir(NEWS_DIR, { recursive: true });
+await mkdir(NEWS_DIR, {recursive: true});
 await writeFile(reportPath, reportContent, 'utf8');
 
 const section1 = extractSectionBody(generated.text, REQUIRED_HEADINGS[0]);
