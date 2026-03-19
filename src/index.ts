@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {mkdir, readFile, readdir, writeFile} from 'node:fs/promises';
+import {mkdir, readdir, readFile, writeFile} from 'node:fs/promises';
 
 import {Experimental_Agent as Agent, stepCountIs, tool} from 'ai';
 import {createOpenAICompatible} from '@ai-sdk/openai-compatible';
@@ -66,8 +66,7 @@ type CliOptions = {
 };
 
 const REQUIRED_HEADINGS = [
-  '## 本周发布了什么（最多 20 条简要概述）',
-  '## 哪些内容与我的工作相关（20 条，附带背景）',
+  '## 本周最相关的 10 条新闻',
   '## 我应该在本周测试什么（具体操作）',
   '## 我可以完全忽略的内容（其他所有内容）',
 ] as const;
@@ -379,7 +378,7 @@ async function fetchFeedLatestItems(
         link: item.link || '',
         publishedAt,
         publishedTimestamp: dateObj ? dateObj.getTime() : null,
-        summary: summary.slice(0, 700),
+        summary: summary.slice(0, 200),
       };
     });
 
@@ -431,13 +430,20 @@ async function collectNewsFromSourceDir(params: {
     .sort((a, b) => b.score - a.score)
     .slice(0, maxFeeds);
 
-  const outcomes = await Promise.all(
-    rankedFeeds.map((feed) => fetchFeedLatestItems(feed, maxItemsPerFeed, sinceDate)),
-  );
+  const batchSize = 10;
+  const outcomes: FeedFetchOutcome[] = [];
+  for (let batchStart = 0; batchStart < rankedFeeds.length; batchStart += batchSize) {
+    const batch = rankedFeeds.slice(batchStart, batchStart + batchSize);
+    const batchResults = await Promise.all(
+      batch.map((feed) => fetchFeedLatestItems(feed, maxItemsPerFeed, sinceDate)),
+    );
+    outcomes.push(...batchResults);
+  }
 
   const items = outcomes
     .flatMap((o) => o.items)
-    .sort((a, b) => (b.publishedTimestamp || 0) - (a.publishedTimestamp || 0));
+    .sort((a, b) => (b.publishedTimestamp || 0) - (a.publishedTimestamp || 0))
+    .slice(0, 150);
 
   const failedFeeds = outcomes
     .map((o) => o.failure)
@@ -472,7 +478,7 @@ const getLatestNewsFromRssSourceDir = tool({
   inputSchema: z.object({
     sourceDir: z.string().default('rss-source'),
     workProfile: z.string().describe('The user work profile'),
-    maxFeeds: z.number().int().min(1).max(80).default(30),
+    maxFeeds: z.number().int().min(1).max(200).default(90),
     maxItemsPerFeed: z.number().int().min(1).max(10).default(3),
     recentDays: z.number().int().min(1).max(30).default(7),
   }),
@@ -491,13 +497,13 @@ const rssAgent = new Agent({
   instructions: [
     'You are RSSAgent for AI news triage.',
     'Always call getLatestNewsFromRssSourceDir first.',
-    'You must output in Chinese with exactly 4 sections and keep concise.',
-    'The 4 section titles must match the required text exactly, character by character.',
-    'Section 1 title: 本周发布了什么（最多 3-5 条简要概述）',
-    'Section 2 title: 哪些内容与我的工作相关（1-2 条，附带背景）',
-    'Section 3 title: 我应该在本周测试什么（具体操作）',
-    'Section 4 title: 我可以完全忽略的内容（其他所有内容）',
-    'Prioritize direct workflow impact and include links for relevant/test items.',
+    'You must output in Chinese with exactly 3 sections and keep concise.',
+    'The 3 section titles must match the required text exactly, character by character.',
+    'Section 1 title: 本周最相关的 10 条新闻',
+    'Section 2 title: 我应该在本周测试什么（具体操作）',
+    'Section 3 title: 我可以完全忽略的内容（其他所有内容）',
+    'For Section 1, list exactly 10 most relevant news items ranked by relevance to user work background, each with a link and one-sentence reason.',
+    'Prioritize direct workflow impact and include links for all items.',
   ].join(' '),
 });
 
@@ -507,22 +513,21 @@ function buildPrompt(workBackground: string, sourceDir: string, retry: boolean):
     : '';
 
   return [
-    `这是我的工作背景：${workBackground}。从以下 AI 新闻项目中，识别出对我的具体工作流有直接影响的发布内容。对于每个相关项目，简要说明它为什么对我的工作重要，以及我应当测试什么。忽略其他一切。`,
+    `这是我的工作背景：${workBackground}。从所有新闻中，按与我工作的相关度排序，挑选出最相关的 10 条，每条附上链接和一句话说明为什么与我的工作相关。`,
     `RSS 源目录：${sourceDir}。调用工具时必须使用这个 sourceDir。`,
     retryLine,
-    '输出要求：将筛选后的输出内容结构化并总结为以下4段，且必须使用完全一致的标题：',
-    '1. 本周发布了什么（最多 3-5 条简要概述）',
-    '2. 哪些内容与我的工作相关（1-2 条，附带背景）',
-    '3. 我应该在本周测试什么（具体操作）',
-    '4. 我可以完全忽略的内容（其他所有内容）',
+    '输出要求：将筛选后的输出内容结构化并总结为以下3段，且必须使用完全一致的标题：',
+    '1. 本周最相关的 10 条新闻',
+    '2. 我应该在本周测试什么（具体操作）',
+    '3. 我可以完全忽略的内容（其他所有内容）',
     '标题必须逐字一致，不允许省略括号内容，不允许改写标题。',
-    '如果某部分没有内容，写“无”。',
-    '除这四段外不要输出其它段落。',
+    '如果某部分没有内容，写"无"。',
+    '除这三段外不要输出其它段落。',
     '必须严格按以下 Markdown 模板输出：',
-    '## 本周发布了什么（最多 3-5 条简要概述）',
-    '- ...',
-    '## 哪些内容与我的工作相关（1-2 条，附带背景）',
-    '- ...',
+    '## 本周最相关的 10 条新闻',
+    '1. [标题](链接) — 相关原因一句话',
+    '2. ...',
+    '（共 10 条，按相关度从高到低排列）',
     '## 我应该在本周测试什么（具体操作）',
     '1. ...',
     '## 我可以完全忽略的内容（其他所有内容）',
@@ -568,7 +573,7 @@ const fallbackToolOutput =
   (await collectNewsFromSourceDir({
     sourceDir: cli.sourceDir,
     workProfile: cli.workBackground,
-    maxFeeds: 30,
+    maxFeeds: 90,
     maxItemsPerFeed: 3,
     recentDays: 7,
   }));
